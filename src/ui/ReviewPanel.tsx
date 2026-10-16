@@ -20,6 +20,7 @@ interface Props {
   onNav: (delta: number) => void;
   onNextPending: () => void;
   onShowInResult: () => void;
+  onExclude?: () => void;
   editRequest: number; // muda quando o atalho "E" é usado
 }
 
@@ -196,6 +197,11 @@ export function ReviewPanel(p: Props) {
           <button className="btn ghost" onClick={p.onShowInResult}>
             Ver no resultado
           </button>
+          {p.onExclude && (
+            <button className="btn ghost" onClick={p.onExclude} title={`Ignorar ${op.pattern} em toda a comparação`}>
+              Excluir da comparação
+            </button>
+          )}
           <label className="check">
             <input type="checkbox" checked={p.autoAdvance} onChange={(e) => p.onAutoAdvance(e.target.checked)} /> avançar após decidir
           </label>

@@ -4,7 +4,8 @@ import { merge, MISSING, serialize } from '../core/merge';
 import { render } from '../core/render';
 import type { Decisions, Json } from '../core/types';
 import { detectFormat, inspect, parseJson, typeName, type ParseError } from '../core/util';
-import type { CompareResult, DocInfo, OpDetail, Request, Response, Side, WireDecisions } from './protocol';
+import { structureChildren } from '../core/pattern';
+import type { CompareResult, DocInfo, OpDetail, Request, Response, Side, StructureResult, WireDecisions } from './protocol';
 
 const docs: Partial<Record<Side, { value: Json; info: DocInfo }>> = {};
 let current: DiffResult | null = null;
@@ -41,8 +42,13 @@ function handle(req: Request): { data: unknown; transfer?: Transferable[] } {
       if (!a || !b) throw new Error('Carregue os dois arquivos antes de comparar.');
       const t0 = performance.now();
       const [target, source] = req.direction === 'BtoA' ? [a.value, b.value] : [b.value, a.value];
-      current = diff(target, source, { strategies: req.strategies });
+      current = diff(target, source, { strategies: req.strategies, exclude: req.exclude, excludeMode: req.excludeMode });
       const res: CompareResult = { ops: current.ops, arrays: current.arrays, ms: Math.round(performance.now() - t0) };
+      return { data: res };
+    }
+    case 'structure': {
+      const list = [docs.A?.value, docs.B?.value].filter((v): v is Json => v !== undefined);
+      const res: StructureResult = structureChildren(list, req.pattern);
       return { data: res };
     }
     case 'op': {

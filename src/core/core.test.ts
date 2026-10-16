@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { alignByContent, internIds } from './align';
 import { diff } from './diff';
 import { merge, serialize } from './merge';
+import { normalizePattern, structureChildren } from './pattern';
 import { render, M } from './render';
 import { ST_ACCEPT, ST_EDIT, ST_REJECT, type Decisions, type Json } from './types';
 import { detectFormat, inspect } from './util';
@@ -106,6 +107,68 @@ describe('arrays sem identificador (alinhamento por conteúdo)', () => {
     const pairs = alignByContent(ia, ib);
     const eqCount = pairs.filter(([i, j]) => i >= 0 && j >= 0 && a[i] === b[j]).length;
     expect(eqCount).toBe(n - 2);
+  });
+});
+
+describe('exclusão de partes da comparação', () => {
+  const A: Json = {
+    meta: { gerado: 'ontem', host: 'a' },
+    cfg: { tema: 'claro' },
+    lista: [{ id: 1, v: 1, cache: 'x' }, { id: 2, v: 2, cache: 'y' }],
+  };
+  const B: Json = {
+    meta: { gerado: 'hoje', host: 'b' },
+    cfg: { tema: 'escuro' },
+    lista: [{ id: 1, v: 1, cache: 'z' }, { id: 2, v: 3, cache: 'w' }],
+    novo: { x: 1 },
+  };
+  const exclude = ['$.meta', '$.lista[*].cache', '$.novo'];
+
+  it('ignora subobjetos e campos dentro de listas', () => {
+    const r = diff(A, B, { exclude });
+    expect(r.ops.map((o) => o.path)).toEqual(['$.cfg.tema', '$.lista[id=2].v']);
+  });
+
+  it('modo "manter": partes excluídas ficam como no destino', () => {
+    const r = diff(A, B, { exclude });
+    expect(merge(r.root, decide(r.ops.length, ST_ACCEPT))).toEqual({
+      meta: { gerado: 'ontem', host: 'a' },
+      cfg: { tema: 'escuro' },
+      lista: [{ id: 1, v: 1, cache: 'x' }, { id: 2, v: 3, cache: 'y' }],
+    });
+  });
+
+  it('modo "remover": partes excluídas saem do resultado mesmo sem outras diferenças', () => {
+    const r = diff(A, A, { exclude, excludeMode: 'remove' });
+    expect(r.ops).toHaveLength(0);
+    expect(merge(r.root, decide(0))).toEqual({ cfg: { tema: 'claro' }, lista: [{ id: 1, v: 1 }, { id: 2, v: 2 }] });
+  });
+
+  it('modo "remover" também limpa itens inseridos inteiros', () => {
+    const r = diff(A, B, { exclude, excludeMode: 'remove' });
+    const t = { lista: [{ id: 1, cache: 'a' }] };
+    const s: Json = { lista: [{ id: 1, cache: 'a' }, { id: 9, cache: 'b', v: 1 }] };
+    const r2 = diff(t, s, { exclude: ['$.lista[*].cache'], excludeMode: 'remove' });
+    expect(merge(r2.root, decide(r2.ops.length, ST_ACCEPT))).toEqual({ lista: [{ id: 1 }, { id: 9, v: 1 }] });
+    expect(r.ops.length).toBe(2);
+  });
+
+  it('alinhamento por conteúdo desconsidera campos excluídos', () => {
+    const r = diff([{ a: 1, t: 1 }, { a: 2, t: 1 }], [{ a: 0, t: 9 }, { a: 1, t: 2 }, { a: 2, t: 3 }], { exclude: ['$[*].t'] });
+    expect(r.ops.map((o) => [o.kind, o.path])).toEqual([['add', '$[+0]']]);
+  });
+
+  it('interpreta caminhos digitados à mão', () => {
+    expect(normalizePattern('clientes[].endereco')).toBe('$.clientes[*].endereco');
+    expect(normalizePattern('$.a[0]["b c"]')).toBe('$.a[*]["b c"]');
+    expect(normalizePattern('$..x')).toBeNull();
+  });
+
+  it('lista a estrutura unindo os dois documentos', () => {
+    const { children } = structureChildren([A, B], '$');
+    expect(children.map((c) => c.key)).toEqual(['meta', 'cfg', 'lista', 'novo']);
+    const items = structureChildren([A, B], '$.lista[*]').children;
+    expect(items.find((c) => c.key === 'cache')).toMatchObject({ pattern: '$.lista[*].cache', counts: [2, 2] });
   });
 });
 

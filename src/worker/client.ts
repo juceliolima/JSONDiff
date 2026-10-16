@@ -1,5 +1,5 @@
 import type { ParseError } from '../core/util';
-import type { CompareResult, DocInfo, OpDetail, RenderResult, Request, Response } from './protocol';
+import type { CompareResult, DocInfo, OpDetail, RenderResult, Request, Response, StructureResult } from './protocol';
 
 export class WorkerError extends Error {
   parse?: ParseError;
@@ -44,6 +44,9 @@ export class DiffClient {
   }
   compare(req: Omit<Extract<Request, { type: 'compare' }>, 'type'>) {
     return this.call<CompareResult>({ type: 'compare', ...req });
+  }
+  structure(pattern: string) {
+    return this.call<StructureResult>({ type: 'structure', pattern });
   }
   op(id: number, unit: string) {
     return this.call<OpDetail>({ type: 'op', id, unit });

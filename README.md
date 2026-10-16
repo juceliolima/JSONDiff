@@ -31,6 +31,17 @@ Roda 100% no navegador: **nenhum dado é enviado para servidores**. Publicado vi
 
 Para decidir em lote, filtre a lista (por tipo, status, caminho ou valor) e use **Aceitar todas** / **Rejeitar todas** — vale só para o que está visível. Ex.: filtrar `.email` e aceitar todas as mudanças de e-mail.
 
+## Excluir partes da comparação
+
+Antes de comparar (ou depois, na aba **Exclusões**), é possível tirar partes da estrutura da comparação:
+
+- Em **Excluir partes da comparação**, desmarque chaves na árvore (que une a estrutura dos dois arquivos). Para listas, abra **itens da lista** e desmarque um campo para excluí-lo de todos os itens — ex.: `$.clientes[*].endereco`.
+- Ou digite o caminho: `config.cache`, `clientes[].endereco`, `$["chave com espaço"]`.
+- Na revisão, o botão **Excluir da comparação** ignora o campo selecionado em todo o arquivo.
+- No arquivo final, as partes excluídas podem **ficar como estão no destino** ou **ser removidas** (inclusive de itens novos inseridos).
+
+As exclusões ficam salvas no navegador para a próxima comparação. Ao alterá-las durante a revisão, as decisões já tomadas são mantidas.
+
 ## Listas (arrays)
 
 Os itens de uma lista são pareados entre os dois arquivos antes da comparação campo a campo:

@@ -10,9 +10,29 @@ import { ResultView, buildLineNumbers, type ResultData } from './ui/ResultView';
 import { ReviewPanel } from './ui/ReviewPanel';
 import { SAMPLE_A, SAMPLE_B } from './ui/sample';
 import { DiffClient, WorkerError } from './worker/client';
-import type { CompareResult, Direction, DocInfo, OpDetail, Side } from './worker/protocol';
+import { ExclusionsPanel } from './ui/ExclusionsPanel';
+import type { CompareResult, Direction, DocInfo, ExcludeMode, OpDetail, Side } from './worker/protocol';
 
-type Tab = 'review' | 'result' | 'arrays';
+type Tab = 'review' | 'result' | 'arrays' | 'excl';
+
+interface CompareOpts {
+  dir: Direction;
+  strats: Record<string, ArrayStrategy>;
+  excl: string[];
+  mode: ExcludeMode;
+  preserve: boolean;
+}
+
+const STORE_KEY = 'jsondiff.exclusions.v1';
+function loadStoredExclusions(): { excl: string[]; mode: ExcludeMode } {
+  try {
+    const v = JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null');
+    if (v && Array.isArray(v.excl)) return { excl: v.excl.filter((x: unknown) => typeof x === 'string'), mode: v.mode === 'remove' ? 'remove' : 'keep' };
+  } catch {
+    /* armazenamento indisponível */
+  }
+  return { excl: [], mode: 'keep' };
+}
 type StFilter = 'all' | Status;
 
 /** Busca binária: posição de `id` em `ids` (ordenado) ou ponto de inserção. */
@@ -39,6 +59,10 @@ export default function App() {
 
   // ---------- comparação ----------
   const [strategies, setStrategies] = useState<Record<string, ArrayStrategy>>({});
+  const [exclusions, setExclusions] = useState<string[]>(() => loadStoredExclusions().excl);
+  const [excludeMode, setExcludeMode] = useState<ExcludeMode>(() => loadStoredExclusions().mode);
+  const [cmpExclKey, setCmpExclKey] = useState('');
+  const [loadSeq, setLoadSeq] = useState(0);
   const [cmp, setCmp] = useState<CompareResult | null>(null);
   const [view, setView] = useState<'setup' | 'review'>('setup');
   const [comparing, setComparing] = useState(false);
@@ -88,6 +112,7 @@ export default function App() {
       try {
         const info = await client.load(side, text, name);
         setDocs((d) => ({ ...d, [side]: info }));
+        setLoadSeq((n) => n + 1);
       } catch (e) {
         const err = e as WorkerError;
         setDocs((d) => ({ ...d, [side]: undefined }));
@@ -119,12 +144,12 @@ export default function App() {
 
   // ---------- comparar ----------
   const runCompare = useCallback(
-    async (dir: Direction, strats: Record<string, ArrayStrategy>, preserve: boolean) => {
+    async ({ dir, strats, excl, mode, preserve }: CompareOpts) => {
       setComparing(true);
       setCmpError(null);
       const prev = preserve && cmp ? { ops: cmp.ops, d: dec.current } : null;
       try {
-        const r = await client.compare({ direction: dir, strategies: strats });
+        const r = await client.compare({ direction: dir, strategies: strats, exclude: excl, excludeMode: mode });
         const status = new Uint8Array(r.ops.length);
         const edits = new Map<number, string>();
         if (prev) {
@@ -140,6 +165,7 @@ export default function App() {
         }
         dec.current = { status, edits };
         setStrategies(strats);
+        setCmpExclKey(JSON.stringify([excl, mode]));
         setCmp(r);
         setView('review');
         setResult(null);
@@ -161,9 +187,26 @@ export default function App() {
       const decided = dec.current.status.some((s) => s !== ST_PENDING);
       if (decided && !window.confirm('Trocar a direção recalcula as diferenças e descarta as decisões já tomadas. Continuar?')) return;
       setDirection(d);
-      if (view === 'review') runCompare(d, strategies, false);
+      if (view === 'review') runCompare({ dir: d, strats: strategies, excl: exclusions, mode: excludeMode, preserve: false });
       else setCmp(null);
     } else setDirection(d);
+  };
+
+  // ---------- exclusões ----------
+  const exclKey = JSON.stringify([exclusions, excludeMode]);
+  const stale = !!cmp && exclKey !== cmpExclKey;
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({ excl: exclusions, mode: excludeMode }));
+    } catch {
+      /* armazenamento indisponível */
+    }
+  }, [exclusions, excludeMode]);
+
+  const applyExclusions = (excl: string[], mode: ExcludeMode, recompare: boolean) => {
+    setExclusions(excl);
+    setExcludeMode(mode);
+    if (recompare) runCompare({ dir: direction, strats: strategies, excl, mode, preserve: true });
   };
 
   // ---------- filtros ----------
@@ -448,6 +491,21 @@ export default function App() {
             <FileSlot side="A" role={dst === 'A' ? 'destino' : 'origem'} info={docs.A} loading={loading.A} error={errors.A} onFiles={onFiles} onPaste={setPaste} />
             <FileSlot side="B" role={dst === 'B' ? 'destino' : 'origem'} info={docs.B} loading={loading.B} error={errors.B} onFiles={onFiles} onPaste={setPaste} />
           </div>
+          {docs.A && docs.B && (
+            <details className="excl-setup" open={exclusions.length > 0}>
+              <summary>
+                Excluir partes da comparação <span className="muted small">(opcional{exclusions.length ? ` · ${exclusions.length} excluída(s)` : ''})</span>
+              </summary>
+              <ExclusionsPanel
+                client={client}
+                docsKey={String(loadSeq)}
+                exclusions={exclusions}
+                mode={excludeMode}
+                live
+                onApply={(e, m) => applyExclusions(e, m, false)}
+              />
+            </details>
+          )}
           <div className="setup-actions">
             {directionControl}
             <div className="muted small dir-explain">
@@ -456,12 +514,18 @@ export default function App() {
             <button
               className="btn primary big"
               disabled={!docs.A || !docs.B || comparing}
-              onClick={() => (cmp ? setView('review') : runCompare(direction, strategies, false))}
+              onClick={() =>
+                cmp && !stale
+                  ? setView('review')
+                  : runCompare({ dir: direction, strats: strategies, excl: exclusions, mode: excludeMode, preserve: !!cmp })
+              }
             >
               {comparing ? (
                 <>
                   <span className="spinner" /> Comparando…
                 </>
+              ) : cmp && stale ? (
+                'Recomparar'
               ) : cmp ? (
                 'Continuar revisão'
               ) : (
@@ -531,6 +595,9 @@ export default function App() {
               <button className={tab === 'arrays' ? 'on' : ''} onClick={() => setTab('arrays')}>
                 Listas / identificadores ({cmp.arrays.length})
               </button>
+              <button className={tab === 'excl' ? 'on' : ''} onClick={() => setTab('excl')}>
+                Exclusões ({exclusions.length})
+              </button>
             </nav>
             <div className="tab-body">
               {tab === 'review' &&
@@ -557,6 +624,15 @@ export default function App() {
                     onNav={nav}
                     onNextPending={() => nextPending(selected)}
                     onShowInResult={() => setTab('result')}
+                    onExclude={
+                      selOp && !selOp.pattern.endsWith('[*]') && selOp.pattern !== '$'
+                        ? () => {
+                            if (!window.confirm(`Excluir ${selOp.pattern} da comparação e recomparar?`)) return;
+                            applyExclusions([...exclusions, selOp.pattern], excludeMode, true);
+                            flash(`${selOp.pattern} foi excluído da comparação.`);
+                          }
+                        : undefined
+                    }
                     editRequest={editReq}
                   />
                 ))}
@@ -579,8 +655,21 @@ export default function App() {
                   arrays={cmp.arrays}
                   strategies={strategies}
                   busy={comparing}
-                  onApply={(s) => runCompare(direction, s, true)}
+                  onApply={(s) => runCompare({ dir: direction, strats: s, excl: exclusions, mode: excludeMode, preserve: true })}
                 />
+              )}
+              {tab === 'excl' && (
+                <div className="excl-tab">
+                  <ExclusionsPanel
+                    client={client}
+                    docsKey={String(loadSeq)}
+                    exclusions={exclusions}
+                    mode={excludeMode}
+                    live={false}
+                    busy={comparing}
+                    onApply={(e, m) => applyExclusions(e, m, true)}
+                  />
+                </div>
               )}
             </div>
           </section>

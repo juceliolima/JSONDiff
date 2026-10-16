@@ -5,6 +5,10 @@ import { canonical, hasOwn, isObj, keySeg, preview, typeName } from './util';
 export interface DiffOptions {
   /** Estratégia por padrão de caminho do array (ex.: "$.usuarios"). Ausente = automático. */
   strategies?: Record<string, ArrayStrategy>;
+  /** Caminhos genéricos excluídos da comparação (ex.: "$.clientes[*].endereco"). */
+  exclude?: string[];
+  /** 'keep' = partes excluídas ficam como estão no destino; 'remove' = saem do resultado. */
+  excludeMode?: 'keep' | 'remove';
 }
 
 export interface DiffResult {
@@ -26,11 +30,18 @@ const PREFERRED_KEYS = [
  */
 export function diff(target: Json, source: Json, opts: DiffOptions = {}): DiffResult {
   const strategies = opts.strategies ?? {};
+  const excluded = new Set(opts.exclude ?? []);
+  const removeExcluded = opts.excludeMode === 'remove';
   const ops: OpSummary[] = [];
   const opNodes: DNode[] = [];
   const arrays = new Map<string, ArrayInfo>();
 
   const mkOp = (kind: Kind, path: string, pattern: string, depth: number, from: Json | undefined, to: Json | undefined): DNode => {
+    if (removeExcluded && excluded.size) {
+      // valores inseridos/mantidos inteiros também não devem levar as partes excluídas
+      if (from !== undefined) from = stripExcluded(from, pattern, excluded);
+      if (to !== undefined) to = stripExcluded(to, pattern, excluded);
+    }
     const id = ops.length;
     const s: OpSummary = { id, kind, path, pattern, depth };
     if (from !== undefined) {
@@ -82,6 +93,13 @@ export function diff(target: Json, source: Json, opts: DiffOptions = {}): DiffRe
       const pat = pattern + keySeg(k);
       const inT = hasOwn(t, k);
       const inS = hasOwn(s, k);
+      if (excluded.has(pat)) {
+        // fora da comparação: mantém o valor do destino ou remove do resultado
+        if (!inT) continue;
+        if (removeExcluded) allEq = false;
+        else entries.push({ key: k, node: { k: 'eq', v: t[k] } });
+        continue;
+      }
       let node: DNode;
       if (inT && inS) node = walk(t[k], s[k], p, pat, depth + 1);
       else if (inT) node = mkOp('del', p, pat, depth + 1, t[k], undefined);
@@ -152,12 +170,54 @@ export function diff(target: Json, source: Json, opts: DiffOptions = {}): DiffRe
       for (let i = 0; i < n; i++) pairs.push([i < t.length ? i : -1, i < s.length ? i : -1]);
       return { pairs, label };
     }
-    const [ta, sb] = internIds(t.map(canonical), s.map(canonical));
+    const canon = excluded.size ? (v: Json) => canonicalEx(v, itemPatternOf(pattern), excluded) : canonical;
+    const [ta, sb] = internIds(t.map(canon), s.map(canon));
     return { pairs: alignByContent(ta, sb), label };
   };
 
   const root = walk(target, source, '$', '$', 0);
   return { root, ops, opNodes, arrays: [...arrays.values()] };
+}
+
+const itemPatternOf = (arrayPattern: string) => arrayPattern + '[*]';
+
+/** Serialização canônica ignorando os caminhos excluídos (para o alinhamento por conteúdo). */
+function canonicalEx(v: Json, pattern: string, excluded: Set<string>): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map((e) => canonicalEx(e, pattern + '[*]', excluded)).join(',') + ']';
+  const keys = Object.keys(v)
+    .filter((k) => !excluded.has(pattern + keySeg(k)))
+    .sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalEx(v[k], pattern + keySeg(k), excluded)).join(',') + '}';
+}
+
+/** Cópia do valor sem os caminhos excluídos (só copia o que precisa mudar). */
+function stripExcluded(v: Json, pattern: string, excluded: Set<string>): Json {
+  if (v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) {
+    let changed = false;
+    const out = v.map((e) => {
+      const r = stripExcluded(e, pattern + '[*]', excluded);
+      if (r !== e) changed = true;
+      return r;
+    });
+    return changed ? out : v;
+  }
+  let out: JsonObject | null = null;
+  for (const k of Object.keys(v)) {
+    const p = pattern + keySeg(k);
+    if (excluded.has(p)) {
+      out ??= { ...v };
+      delete out[k];
+      continue;
+    }
+    const r = stripExcluded(v[k], p, excluded);
+    if (r !== v[k]) {
+      out ??= { ...v };
+      out[k] = r;
+    }
+  }
+  return out ?? v;
 }
 
 const isKeyValue = (v: Json) => typeof v === 'string' || typeof v === 'number';
